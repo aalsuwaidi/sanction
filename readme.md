@@ -7,28 +7,28 @@ An mitmproxy addon that replicates the functionality of [Autorize](https://githu
 
 Clone the repository and start mitmproxy with sanction loaded using the ```-s``` flag:
 
->`mitmproxy -s sanction.py`
+`mitmproxy -s sanction.py`
 
 Sanction provides 6 commands in mitmproxy:
 
-`sanction.set_target` - Sets the target host to match against. Default value is *
+1. `sanction.set_target` - Sets the target host to match against. Default value is *
 > This command must be called with a selection. For example: `sanction.set_target @focus`
 
-`sanction.set_cookies_from_request` - Selects the cookies from the chosen request and loads them into Sanction.
+2. `sanction.set_cookies_from_request` - Selects the cookies from the chosen request and loads them into Sanction.
 
 > This command must be called with a selection. For example: `sanction.set_cookies_from_request @focus`
 
-`sanction.set_authorization_from_request` - Selects the authorisation header from the chosen request and loads it into Sanction.
+3. `sanction.set_authorization_from_request` - Selects the authorisation header from the chosen request and loads it into Sanction.
 
 > This command must be called with a selection. For example: `sanction.set_authorization_from_request @focus`
 
-`sanction.activate` - Activates Sanction
+4. `sanction.activate` - Activates Sanction
 
-`sanction.false_positive` - Specifies that the URL selected is a false positive
+5. `sanction.false_positive` - Specifies that the URL selected is a false positive
 
 > This command must be called with a selection. For example: `sanction.false_positive @focus`
 
-`sanction.deactivate` - Deactivates Sanction
+6. `sanction.deactivate` - Deactivates Sanction
 
 # How it works
 
