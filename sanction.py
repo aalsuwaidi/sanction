@@ -1,63 +1,116 @@
-from mitmproxy import ctx, http, exceptions
+from difflib import SequenceMatcher
+from telnetlib import SE
+from mitmproxy import ctx, command, flow, http
 
-def parse_list(string):
-    return string.split(",")
+def check_domain(target, host):
+    if target == "*":
+        return True
+    else:
+        return target == host
+
+def check_similarity(original, modified):
+    s = SequenceMatcher(None, original, modified)
+    if s.ratio() > 0.95:
+        return True
+    else:
+        return False
+
 class Sanction:
     def __init__(self):
         ctx.log.info("Initialising")
+        self.replacement_dict = {}
+        self.flow_dict = {}
+        self.active = False
+        self.false_positive_list = []
     def load(self, loader):
         loader.add_option(
-            name="place",
+            name = "domain",
             typespec = str,
-            default = 'cookies',
-            help = "cookies / headers"
+            default = "*",
+            help = "Target Domain (default: *)"
         )
-        loader.add_option(
-            name="names",
-            typespec = str,
-            default = '',
-            help = "List of cookies / headers that should be replaced"
-        )
-        loader.add_option(
-            name="values",
-            typespec = str,
-            default = '',
-            help = "List of replacement values for the selected cookies / headers"
-        )
-    def configure(self, updates):
-        if "names" in updates or "values" in updates:
-            self.names = parse_list(ctx.options.names)
-            ctx.log.info("Names %s" % self.names)
-            self.values = parse_list(ctx.options.values)
-            ctx.log.info("Values %s" % self.values)
-            if len(self.names) != len(self.values):
-                raise exceptions.OptionsError("Number of Keys and Values must be equal")
-        if "place" in updates:
-            ctx.log.info("Place: %s" % ctx.options.place)
-            if ctx.options.place not in ["cookies", "headers"]:
-                raise exceptions.OptionsError("Place should either be cookies / headers")
-    def request(self, flow: http.HTTPFlow):
-        # Avoid Infinite Loop
-        if flow.is_replay == "request":
-            return 
-        if ctx.options.place == "cookies":
-            alt_auth = flow.copy()
+
+    @command.command("sanction.set_target")
+    def set_target(self, flow: flow.Flow) -> None:
+        ctx.options.domain = flow.request.host
+
+    @command.command("sanction.set_cookies_from_request")
+    def set_cookies_from_request(self, flow: flow.Flow) -> None:
+        try:
+            cookies = flow.request.headers["Cookie"]
+            self.replacement_dict["Cookie"] = cookies
+        except KeyError:
+            ctx.log.error("Request does not have cookies")
+
+    @command.command("sanction.set_authorization_from_request")
+    def set_authorisation_from_request(self, flow: flow.Flow) -> None:
+        try:
+            authorization_header = flow.request.headers["Authorization"]
+            self.replacement_dict["Authorization"] = authorization_header
+        except KeyError:
+            ctx.log.error("Request does not have an authorisation header")
+
+    @command.command("sanction.false_positive")
+    def false_positive(self, flow: flow.Flow) -> None:
+        if flow.request.url not in self.false_positive_list:
+            ctx.log.info("Adding %s as false positive" % flow.request.url)
+            self.false_positive_list.append(flow.request.url)
+    @command.command("sanction.activate")
+    def start(self) -> None:
+        if not self.replacement_dict:
+            ctx.log.error("Please specify cookies / headers to replace")
+        else:
+            self.active = True
+
+    @command.command("sanction.deactivate")
+    def stop(self) -> None:
+        self.active = False
+
+    def request(self, flow: http.HTTPFlow) -> None:
+        # Avoids infinite loop + replays when addon is inactive
+        if flow.is_replay == "request" or not self.active or flow.request.url in self.false_positive_list:
+            return
+        if check_domain(ctx.options.domain, flow.request.host):
+            ctx.log.info("Request matched filter and domain")
+            self.flow_dict[flow.id] = {
+                "original": flow
+            }
+            # Create a copy of the request and remove the authorisation + cookie header
             no_auth = flow.copy()
-            for cookie,value in zip(self.names, self.values):
-                if cookie in flow.request.cookies:
-                    del no_auth.request.cookies[cookie]
-                    alt_auth.request.cookies[cookie] = value
-            ctx.master.commands.call("replay.client", [alt_auth])
+            no_auth.marked = ":unlock:"
+            no_auth.comment
+            no_auth.request.headers.pop("Authorization", None)
+            no_auth.request.headers.pop("Cookie", None)
+            
+            # Setting the original_request flow id in the metadata
+            no_auth.metadata["original_request_id"] = flow.id
+            no_auth.metadata["type"] = "no_auth"
+
+            # If the replacement dictionary is not empty then we replay with replaced values
+            if bool(self.replacement_dict):
+                ctx.log.info("Replacing headers")
+                alt_auth = flow.copy()
+                alt_auth.marked = ":performing_arts:"
+                for replacement in self.replacement_dict:
+                    alt_auth.request.headers[replacement] = self.replacement_dict[replacement]
+                # Setting the original_request flow id in the metadata
+                alt_auth.metadata["original_request_id"] = flow.id
+                alt_auth.metadata["type"] = "alt_auth"
+                ctx.master.commands.call("replay.client", [alt_auth])
             ctx.master.commands.call("replay.client", [no_auth])
-        else: 
-            alt_auth = flow.copy()
-            no_auth = flow.copy()
-            for header,value in zip(self.names, self.values):
-                if header in flow.request.headers:
-                    del no_auth.request.headers[cookie]
-                    alt_auth.request.headers[header] = value
-            ctx.master.commands.call("replay.client", [alt_auth])
-            ctx.master.commands.call("replay.client", [no_auth])
+    def response(self, flow: http.HTTPFlow) -> None:
+        # Here we don't want non replays
+        if flow.is_replay != "request":
+            return
+        
+        # Get original flow from flow_dict
+        original_request_id = flow.metadata["original_request_id"]
+        original_request = self.flow_dict[original_request_id]["original"]
+        
+        # Compare similarity of response bodies
+        if check_similarity(original_request.response.get_content(), flow.response.get_content()):
+            ctx.log.info("Responses are similar")
+            flow.marked = ":heavy_exclamation_mark:"
 addons = [
     Sanction()
 ]
